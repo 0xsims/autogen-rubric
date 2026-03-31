@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autogen-rubric"
+version = "1.5.2"
+description = "Post-quantum AI decision attestation for AutoGen, LlamaIndex, and any Python AI pipeline"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Scott Sims", email = "Scott@Rubric-Protocol.com" }]
+keywords = ["ai","attestation","compliance","autogen","llamaindex","post-quantum","hedera","eu-ai-act","ml-dsa","audit"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
+]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+autogen = ["pyautogen>=0.2.0"]
+llama = ["llama-index>=0.10.0"]
+all = ["pyautogen>=0.2.0","llama-index>=0.10.0"]
+dev = ["pytest","pytest-asyncio","black","mypy"]
+
+[project.urls]
+Homepage = "https://rubric-protocol.com"
+Documentation = "https://rubric-protocol.com/docs"
+Repository = "https://github.com/0xsims/autogen-rubric"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["autogen_rubric*"]
