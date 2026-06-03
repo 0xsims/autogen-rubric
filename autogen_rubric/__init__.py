@@ -331,28 +331,6 @@ class RubricClient:
         return AttestationResult(attestation_id=attestation_id,agent_id=agent_id,
             stage="queued",signed_at=submitted_at,node=self.node)
 
-    def _poll_payload_hash(self, attestation_id, timeout=10.0, interval=0.5):
-        """Poll /v1/status/:id until the attestation is confirmed; return its
-        payload_hash (the value the server signed), or None on timeout. Used to
-        build SIGNED provenance linking the next step to this one."""
-        if not attestation_id:
-            return None
-        import time as _time
-        url = self._endpoint().rstrip("/") + "/v1/status/" + str(attestation_id)
-        deadline = _time.time() + timeout
-        while _time.time() < deadline:
-            try:
-                req = request.Request(url, headers=self._headers(), method="GET")
-                with request.urlopen(req, timeout=self.timeout) as resp:
-                    body = json.loads(resp.read().decode("utf-8"))
-                ph = body.get("payloadHash")
-                if ph:
-                    return ph
-            except Exception:
-                pass
-            _time.sleep(interval)
-        return None
-
     def attest_tool_call(self, agent_id, tool_name, tool_input, tool_output,
                          success, duration_ms, error=None, session_id=None,
                          pipeline_id=None, parents=None):
