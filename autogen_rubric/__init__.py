@@ -77,6 +77,7 @@ class AttestationResult:
     hcs_sequence: Optional[int] = None
     merkle_root: Optional[str] = None
     error: Optional[str] = None
+    payload_hash: Optional[str] = None
     def __repr__(self):
         return f"<AttestationResult id={self.attestation_id[:8]}... stage={self.stage} node={self.node}>"
 
@@ -319,6 +320,7 @@ class RubricClient:
                 # response (no HCS wait). Stash it so the NEXT step can build
                 # signed provenance linking to this one — instantly, no polling.
                 self._last_payload_hash = resp.get("payloadHash")
+                result.payload_hash = resp.get("payloadHash")
                 return result
             except Exception as e:
                 logger.warning(f"[RubricClient] Attestation failed (non-fatal): {e}")
@@ -353,7 +355,7 @@ class RubricClient:
 
     def attest_tool_call(self, agent_id, tool_name, tool_input, tool_output,
                          success, duration_ms, error=None, session_id=None,
-                         pipeline_id=None):
+                         pipeline_id=None, parents=None):
         import hashlib, json as _json
         def _sha3(v):
             return hashlib.sha3_256(_json.dumps(v, sort_keys=True, default=str).encode()).hexdigest()
@@ -377,16 +379,35 @@ class RubricClient:
         # prior attestation's status for its server-signed payload_hash; if
         # available, the chain link is cryptographically bound (verify-chain
         # reads this). Degrades gracefully to metadata-only if unavailable.
+        # DAG provenance. Explicit `parents` (a merge) overrides the implicit
+        # default (link to the prior step). Each parent may be an
+        # AttestationResult or a dict carrying attestation_id + payload_hash.
+        def _edge(p):
+            if isinstance(p, dict):
+                aid = p.get("attestation_id"); ph = p.get("payload_hash")
+                reg = p.get("issuer_region", self.node); rel = p.get("relationship", "consumed_output")
+            else:
+                aid = getattr(p, "attestation_id", None); ph = getattr(p, "payload_hash", None)
+                reg = getattr(p, "node", self.node); rel = "consumed_output"
+            if aid and ph:
+                return {"parent_attestation_id": aid, "parent_payload_hash": ph,
+                        "parent_issuer_region": reg, "relationship": rel}
+            return None
         provenance = None
-        prior_id = getattr(self, "_last_attestation_id", None)
-        prior_hash = getattr(self, "_last_payload_hash", None)
-        if prior_id and prior_hash:
-            provenance = {
-                "parent_attestation_id": prior_id,
-                "parent_payload_hash": prior_hash,
-                "parent_issuer_region": self.node,
-                "relationship": "consumed_output",
-            }
+        if parents:
+            edges = [e for e in (_edge(p) for p in parents) if e]
+            if edges:
+                provenance = {"parents": edges}
+        else:
+            prior_id = getattr(self, "_last_attestation_id", None)
+            prior_hash = getattr(self, "_last_payload_hash", None)
+            if prior_id and prior_hash:
+                provenance = {"parents": [{
+                    "parent_attestation_id": prior_id,
+                    "parent_payload_hash": prior_hash,
+                    "parent_issuer_region": self.node,
+                    "relationship": "consumed_output",
+                }]}
         return self.attest(agent_id=agent_id, output=f"tool_call:{tool_name}",
             leaf_type="tool_call", metadata=metadata, pipeline_id=pipeline_id,
             provenance=provenance)
