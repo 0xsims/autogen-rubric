@@ -1,4 +1,5 @@
 import json
+import os
 import logging
 import threading
 import time
@@ -8,15 +9,51 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 from urllib import request
+from autogen_rubric._compliance import ComplianceFields
 
 logger = logging.getLogger("rubric")
 
+def _hash_agent_state(obj, max_bytes=4096):
+    """
+    SHA3-256 hash of agent state. Serializes memory, context, system prompt.
+    Caps at max_bytes to bound storage impact at scale.
+    stateHashType: "full" if under cap, "truncated" if capped.
+    """
+    import hashlib, json as _json
+    state = {}
+    for attr in ["memory", "chat_history", "system_message", "system_prompt",
+                 "state", "context", "messages", "_memory"]:
+        val = getattr(obj, attr, None)
+        if val is not None:
+            state[attr] = val
+    try:
+        serialized = _json.dumps(state, sort_keys=True, default=str).encode()
+    except Exception:
+        serialized = str(state).encode()
+    truncated = len(serialized) > max_bytes
+    data = serialized[:max_bytes]
+    h = hashlib.sha3_256(data).hexdigest()
+    return h, "truncated" if truncated else "full"
+
+def _hash_dict_state(d, max_bytes=4096):
+    """SHA3-256 hash of a dict (e.g. LangGraph state)."""
+    import hashlib, json as _json
+    try:
+        serialized = _json.dumps(d, sort_keys=True, default=str).encode()
+    except Exception:
+        serialized = str(d).encode()
+    truncated = len(serialized) > max_bytes
+    data = serialized[:max_bytes]
+    h = hashlib.sha3_256(data).hexdigest()
+    return h, "truncated" if truncated else "full"
+
 NODES = {
-    "us": "https://rubric-protocol.com/verify",
-    "sg": "https://sg.rubric-protocol.com/verify",
-    "jp": "https://jp.rubric-protocol.com/verify",
-    "ca": "https://ca.rubric-protocol.com/verify",
-    "eu": "https://eu.rubric-protocol.com/verify",
+    # Endpoints configured at runtime via environment variables
+    "us": os.environ.get("RUBRIC_ENDPOINT_US", "https://rubric-protocol.com"),
+    "sg": os.environ.get("RUBRIC_ENDPOINT_SG", "https://sg.rubric-protocol.com"),
+    "jp": os.environ.get("RUBRIC_ENDPOINT_JP", "https://jp.rubric-protocol.com"),
+    "ca": os.environ.get("RUBRIC_ENDPOINT_CA", "https://ca.rubric-protocol.com"),
+    "eu": os.environ.get("RUBRIC_ENDPOINT_EU", "https://eu.rubric-protocol.com"),
 }
 
 @dataclass
@@ -88,13 +125,14 @@ def _http_post(url, body, headers, timeout=15):
         return json.loads(resp.read().decode("utf-8"))
 
 class RubricClient:
-    def __init__(self, api_key, node="us", enterprise=False, background_queue=False,
+    def __init__(self, api_key, node="us", enterprise=False, tier=None, background_queue=False,
                  flush_interval=5.0, batch_size=100, timeout=15, on_dead_letter=None):
         if node not in NODES and node != "auto":
             raise ValueError(f"Invalid node '{node}'. Choose from: {list(NODES.keys())} or 'auto'")
         self.api_key = api_key
         self.node = node
         self.enterprise = enterprise
+        self.tier = tier or ("enterprise" if enterprise else "developer")
         self.timeout = timeout
         self._node_keys = list(NODES.keys())
         self._node_index = 0
@@ -114,34 +152,244 @@ class RubricClient:
     def _headers(self):
         return {"x-api-key": self.api_key, "Content-Type": "application/json"}
 
+    def register_system(self, system_id, intended_use, jurisdiction,
+                        system_name=None, organization_name=None,
+                        contact_email=None, description=None):
+        """
+        Register an AI system and get declaration-driven compliance config.
+        Two fields in → full regulatory obligation set out.
+
+        Args:
+            system_id: Stable identifier for your AI system
+            intended_use: What the system does (e.g. 'credit-underwriting')
+            jurisdiction: List of jurisdictions (e.g. ['EU','DE','US','TX'])
+            system_name: Human-readable system name
+            organization_name: Your organization name
+            contact_email: Contact email for compliance queries
+            description: Brief system description
+
+        Returns:
+            dict with compliance config, mandatory fields, SDK config, and gaps
+        """
+        endpoint = self._endpoint()
+        url = endpoint.replace('/v1/record', '').replace('/v1/tiered-attest', '')
+        url = url.rstrip('/') + '/v1/system/register'
+        body = {
+            'systemId': system_id,
+            'intendedUse': intended_use,
+            'jurisdiction': [j.upper() for j in jurisdiction],
+        }
+        if system_name: body['systemName'] = system_name
+        if organization_name: body['organizationName'] = organization_name
+        if contact_email: body['contactEmail'] = contact_email
+        if description: body['description'] = description
+        try:
+            resp = _http_post(url, body, self._headers(), timeout=self.timeout)
+            return resp
+        except Exception as e:
+            logger.error(f"[RubricClient] System registration failed: {e}")
+            raise
+
+    def validate_payload(self, system_id, payload):
+        """
+        Validate an attestation payload against registered schema before sending.
+        Returns coverage score and missing fields.
+        """
+        endpoint = self._endpoint()
+        url = endpoint.replace('/v1/record', '').replace('/v1/tiered-attest', '')
+        url = url.rstrip('/') + '/v1/system/validate'
+        try:
+            return _http_post(url, {'systemId': system_id, 'payload': payload},
+                            self._headers(), timeout=self.timeout)
+        except Exception as e:
+            logger.warning(f"[RubricClient] Validation failed: {e}")
+            return None
+
+    def attest_compliant(self, agent_id, decision, data, source_id,
+                         compliance: ComplianceFields = None, **kwargs):
+        """
+        Submit a compliance-aware attestation with auto-population of timing fields.
+
+        Auto-populates:
+        - sessionStartedAt / sessionEndedAt (if not provided)
+        - latencyMs (computed from session times)
+        - sourceId (for dedup)
+
+        Args:
+            agent_id: Agent identifier
+            decision: Decision made (free text)
+            data: Arbitrary payload dict
+            source_id: Dedup key (unique per decision)
+            compliance: ComplianceFields instance with regulatory metadata
+            **kwargs: Additional fields passed directly to the API
+        """
+        import time
+        started_at = datetime.now(timezone.utc).isoformat()
+        t0 = time.monotonic()
+
+        endpoint = self._endpoint()
+        url = endpoint.replace("/v1/record", "").rstrip("/") + ("/v1/attest" if self.tier == "enterprise" else "/v1/standard-attest" if self.tier == "standard" else "/v1/tiered-attest")
+
+        body = {
+            'agentId': agent_id,
+            'sessionId': str(uuid.uuid4()),
+            'decision': decision,
+            'data': data,
+            'sourceId': source_id,
+        }
+
+        # Apply compliance fields
+        if compliance:
+            c = compliance.to_dict()
+            # Auto-populate timing if not set
+            if 'sessionStartedAt' not in c:
+                c['sessionStartedAt'] = started_at
+            body.update(c)
+
+        # Auto-set sessionEndedAt and latencyMs
+        ended_at = datetime.now(timezone.utc).isoformat()
+        latency = int((time.monotonic() - t0) * 1000)
+        if 'sessionEndedAt' not in body:
+            body['sessionEndedAt'] = ended_at
+        if 'latencyMs' not in body:
+            body['latencyMs'] = latency
+
+        # Any extra kwargs
+        body.update(kwargs)
+
+        if self._queue is None:
+            try:
+                resp = _http_post(url, body, self._headers(), timeout=self.timeout)
+                return resp
+            except Exception as e:
+                logger.warning(f"[RubricClient] Compliant attestation failed: {e}")
+                raise
+        else:
+            self._queue.enqueue(url, body, self._headers())
+            return {'status': 'queued', 'sourceId': source_id}
+
+    # leaf_type -> rubricEventType auto-mapping
+    _LEAF_TO_EVENT = {
+        "AGENT_OUTPUT": "inference.generation",
+        "RULE_APPLIED": "inference.decision",
+        "PIPELINE_COMPLETE": "inference.generation",
+        "tool_call": "inference.decision",
+        "DEPLOYMENT": "model.deployment",
+        "INCIDENT": "incident.detected",
+    }
+
     def attest(self, agent_id, output, leaf_type="AGENT_OUTPUT", metadata=None,
-               pipeline_id=None, confidence=None, risk="normal"):
+               pipeline_id=None, confidence=None, risk="normal",
+               compliance=None, system_id=None, system_version=None,
+               jurisdiction=None, risk_level=None, latency_ms=None, provenance=None):
         attestation_id = str(uuid.uuid4())
         submitted_at = datetime.now(timezone.utc).isoformat()
         endpoint = self._endpoint()
-        path = "/v1/tiered-attest" if self.enterprise else "/v1/attest"
-        url = endpoint + path
+        url = endpoint.rstrip("/") + ("/v1/attest" if self.tier == "enterprise" else "/v1/standard-attest" if self.tier == "standard" else "/v1/tiered-attest")
         data = {"attestationId":attestation_id,"agentId":agent_id,"output":output,
                 "leafType":leaf_type,"submittedAt":submitted_at}
         if metadata: data["metadata"] = metadata
         if confidence is not None: data["confidence"] = confidence
         body = {"attestationId":attestation_id,"sourceId":agent_id,"data":data}
+        if provenance: body["provenance"] = provenance
         if pipeline_id: body["pipelineId"] = pipeline_id
+        # Auto-populate complianceMeta at top level
+        if compliance is not None:
+            cf = compliance.to_dict() if hasattr(compliance, "to_dict") else dict(compliance)
+            body.update(cf)
+        else:
+            body["rubricEventType"] = self._LEAF_TO_EVENT.get(leaf_type, "inference.generation")
+            body["agentId"] = agent_id
+            if system_id: body["systemId"] = system_id
+            if system_version: body["systemVersion"] = system_version
+            if jurisdiction: body["jurisdiction"] = jurisdiction
+            if risk_level: body["riskLevel"] = risk_level
+            if latency_ms is not None: body["latencyMs"] = latency_ms
+            if confidence is not None: body["confidence"] = confidence
         headers = self._headers()
         if risk == "high" or self._queue is None:
             try:
                 resp = _http_post(url, body, headers, timeout=self.timeout)
-                return AttestationResult(attestation_id=attestation_id,agent_id=agent_id,
+                result = AttestationResult(attestation_id=attestation_id,agent_id=agent_id,
                     stage=resp.get("stage","pending"),signed_at=submitted_at,node=self.node,
                     hcs_topic=resp.get("hcsTopic"),hcs_sequence=resp.get("hcsSequenceNumber"),
                     merkle_root=resp.get("merkleRoot"))
+                self._last_attestation_id = attestation_id
+                # Item 1 (Option B): server returns sign-time payload_hash in the
+                # response (no HCS wait). Stash it so the NEXT step can build
+                # signed provenance linking to this one — instantly, no polling.
+                self._last_payload_hash = resp.get("payloadHash")
+                return result
             except Exception as e:
                 logger.warning(f"[RubricClient] Attestation failed (non-fatal): {e}")
                 return AttestationResult(attestation_id=attestation_id,agent_id=agent_id,
                     stage="local",signed_at=submitted_at,node=self.node,error=str(e))
         self._queue.enqueue(url, body, headers)
+        self._last_attestation_id = attestation_id
         return AttestationResult(attestation_id=attestation_id,agent_id=agent_id,
             stage="queued",signed_at=submitted_at,node=self.node)
+
+    def _poll_payload_hash(self, attestation_id, timeout=10.0, interval=0.5):
+        """Poll /v1/status/:id until the attestation is confirmed; return its
+        payload_hash (the value the server signed), or None on timeout. Used to
+        build SIGNED provenance linking the next step to this one."""
+        if not attestation_id:
+            return None
+        import time as _time
+        url = self._endpoint().rstrip("/") + "/v1/status/" + str(attestation_id)
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            try:
+                req = request.Request(url, headers=self._headers(), method="GET")
+                with request.urlopen(req, timeout=self.timeout) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                ph = body.get("payloadHash")
+                if ph:
+                    return ph
+            except Exception:
+                pass
+            _time.sleep(interval)
+        return None
+
+    def attest_tool_call(self, agent_id, tool_name, tool_input, tool_output,
+                         success, duration_ms, error=None, session_id=None,
+                         pipeline_id=None):
+        import hashlib, json as _json
+        def _sha3(v):
+            return hashlib.sha3_256(_json.dumps(v, sort_keys=True, default=str).encode()).hexdigest()
+        def _preview(v, n=120):
+            s = _json.dumps(v, default=str) if not isinstance(v, str) else v
+            return s[:n] + ("..." if len(s) > n else "")
+        metadata = {
+            "leafType": "tool_call",
+            "toolName": tool_name,
+            "toolInputHash": _sha3(tool_input),
+            "toolOutputHash": _sha3(tool_output) if tool_output is not None else None,
+            "toolInputPreview": _preview(tool_input),
+            "success": success,
+            "durationMs": round(duration_ms, 2),
+            "sessionId": session_id,
+            "priorAttestationId": getattr(self, "_last_attestation_id", None),
+        }
+        if error:
+            metadata["error"] = str(error)[:256]
+        # Build SIGNED provenance linking this step to the prior one. Poll the
+        # prior attestation's status for its server-signed payload_hash; if
+        # available, the chain link is cryptographically bound (verify-chain
+        # reads this). Degrades gracefully to metadata-only if unavailable.
+        provenance = None
+        prior_id = getattr(self, "_last_attestation_id", None)
+        prior_hash = getattr(self, "_last_payload_hash", None)
+        if prior_id and prior_hash:
+            provenance = {
+                "parent_attestation_id": prior_id,
+                "parent_payload_hash": prior_hash,
+                "parent_issuer_region": self.node,
+                "relationship": "consumed_output",
+            }
+        return self.attest(agent_id=agent_id, output=f"tool_call:{tool_name}",
+            leaf_type="tool_call", metadata=metadata, pipeline_id=pipeline_id,
+            provenance=provenance)
 
     def attest_request(self, req):
         return self.attest(agent_id=req.agent_id,output=req.output,leaf_type=req.leaf_type,
@@ -274,11 +522,21 @@ try:
             if "tool" in ev:
                 @bus.on(ToolUsageFinishedEvent)
                 def _to(src,event):
-                    try: c.attest(agent_id="crewai-tool:"+str(getattr(event,"tool_name","unknown")),output=str(getattr(event,"output",""))[:2000],leaf_type="EXTERNAL_ORACLE",metadata={"event":"tool_usage_finished","tool":str(getattr(event,"tool_name","unknown"))},pipeline_id=p)
+                    try:
+                        tname=str(getattr(event,"tool_name","unknown"))
+                        c.attest_tool_call(agent_id="crewai-tool:"+tname,tool_name=tname,
+                            tool_input=getattr(event,"tool_input",""),
+                            tool_output=str(getattr(event,"output",""))[:2000],
+                            success=True,duration_ms=getattr(event,"duration_ms",0) or 0,pipeline_id=p)
                     except Exception as e: logger.warning("[RubricCrewAI] "+str(e))
                 @bus.on(ToolUsageErrorEvent)
                 def _toe(src,event):
-                    try: c.attest(agent_id="crewai-tool:"+str(getattr(event,"tool_name","unknown")),output="TOOL_ERROR:"+str(getattr(event,"error","")),leaf_type="EXTERNAL_ORACLE",metadata={"event":"tool_usage_error"},pipeline_id=p)
+                    try:
+                        tname=str(getattr(event,"tool_name","unknown"))
+                        c.attest_tool_call(agent_id="crewai-tool:"+tname,tool_name=tname,
+                            tool_input=getattr(event,"tool_input",""),
+                            tool_output=None,success=False,duration_ms=0,
+                            error=str(getattr(event,"error","")),pipeline_id=p)
                     except Exception as e: logger.warning("[RubricCrewAI] "+str(e))
             if "crew" in ev:
                 @bus.on(CrewKickoffCompletedEvent)
@@ -553,6 +811,26 @@ def _patch_langchain(client, pipeline_id):
                 except Exception as e:
                     logger.warning(f"[Rubric/LangChain] {e}")
 
+            def on_tool_end(self, output, *, run_id=None, parent_run_id=None, tags=None, **kwargs):
+                try:
+                    tool_name = kwargs.get("name", "unknown")
+                    client.attest_tool_call(agent_id=f"langchain:tool:{tool_name}",
+                        tool_name=tool_name, tool_input=kwargs.get("input", ""),
+                        tool_output=str(output)[:2000], success=True, duration_ms=0,
+                        pipeline_id=pipeline_id)
+                except Exception as e:
+                    logger.warning(f"[Rubric/LangChain/tool] {e}")
+
+            def on_tool_error(self, error, *, run_id=None, **kwargs):
+                try:
+                    tool_name = kwargs.get("name", "unknown")
+                    client.attest_tool_call(agent_id=f"langchain:tool:{tool_name}",
+                        tool_name=tool_name, tool_input=kwargs.get("input", ""),
+                        tool_output=None, success=False, duration_ms=0,
+                        error=str(error), pipeline_id=pipeline_id)
+                except Exception as e:
+                    logger.warning(f"[Rubric/LangChain/tool_error] {e}")
+
             def on_agent_finish(self, finish, **kwargs):
                 try:
                     output = finish.return_values.get("output", "") if hasattr(finish, "return_values") else str(finish)
@@ -585,10 +863,14 @@ def _patch_autogen(client, pipeline_id):
         def _patched_receive(self_inner, message, sender, *args, **kwargs):
             try:
                 content = message if isinstance(message, str) else json.dumps(message)
+                state_hash, state_hash_type = _hash_agent_state(self_inner)
                 client.attest(agent_id=f"autogen:{self_inner.name}",
                     output=content[:2000], leaf_type="AGENT_OUTPUT",
                     metadata={"framework": "autogen",
-                              "sender": getattr(sender, "name", "unknown")},
+                              "sender": getattr(sender, "name", "unknown"),
+                              "agentStateHash": state_hash,
+                              "stateHashType": state_hash_type,
+                              "priorAttestationId": getattr(client, "_last_attestation_id", None)},
                     pipeline_id=pipeline_id)
             except Exception as e:
                 logger.warning(f"[Rubric/AutoGen] {e}")
@@ -658,11 +940,20 @@ def _patch_langgraph(client, pipeline_id):
             _orig_invoke = graph.invoke
             @functools.wraps(_orig_invoke)
             def _patched_invoke(state, *a, **kw):
+                try:
+                    input_hash, input_hash_type = _hash_dict_state(state) if isinstance(state, dict) else ("", "none")
+                except Exception:
+                    input_hash, input_hash_type = "", "error"
                 result = _orig_invoke(state, *a, **kw)
                 try:
+                    output_hash, output_hash_type = _hash_dict_state(result) if isinstance(result, dict) else ("", "none")
                     client.attest(agent_id="langgraph:graph",
                         output=str(result)[:2000], leaf_type="AGENT_OUTPUT",
-                        metadata={"framework": "langgraph", "event": "graph_invoke"},
+                        metadata={"framework": "langgraph", "event": "graph_invoke",
+                                  "agentStateHash": output_hash,
+                                  "inputStateHash": input_hash,
+                                  "stateHashType": output_hash_type,
+                                  "priorAttestationId": getattr(client, "_last_attestation_id", None)},
                         pipeline_id=pipeline_id)
                 except Exception as e:
                     logger.warning(f"[Rubric/LangGraph] {e}")
@@ -675,10 +966,12 @@ def _patch_langgraph(client, pipeline_id):
         logger.warning(f"[Rubric/LangGraph patch] {e}")
 
 __all__ = [
+    "RubricAgnoInstrumentation","rubric_attest_tool",
+    "RubricAgentRunHook","rubric_function_tool","get_sk_rubric_plugin",
     "RubricClient","AttestationRequest","AttestationResult",
     "RubricAutoGenHook","RubricLlamaIndexHandler","RubricCrewAIListener",
     "RubricHaystackComponent","rubric_haystack_callback",
     "rubric_semantic_kernel_filter","attest_function",
     "instrument","Instrumentation",
 ]
-__version__ = "1.5.2"
+__version__ = "1.7.4"
