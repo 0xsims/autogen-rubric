@@ -997,4 +997,4 @@ __all__ = [
     "rubric_semantic_kernel_filter","attest_function",
     "instrument","Instrumentation",
 ]
-__version__ = "1.7.4"
+__version__ = "1.8.0"

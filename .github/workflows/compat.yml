@@ -39,6 +39,12 @@ jobs:
           - llama-index
           - crewai
           - dspy
+          - haystack-ai
+          - semantic-kernel
+          - pydantic-ai-slim
+          - openai-agents
+          - google-adk
+          - strands-agents
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -48,6 +54,8 @@ jobs:
         run: pip install pytest ${{ matrix.framework }}
       - name: Smoke test with ${{ matrix.framework }} installed
         run: pytest tests/ -v -k "not test_no_frameworks"
+        env:
+          RUBRIC_CI_KEY: ${{ secrets.RUBRIC_CI_KEY }}
 
   notify:
     name: Notify on failure
