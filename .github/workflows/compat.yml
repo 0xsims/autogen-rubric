@@ -51,7 +51,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install latest ${{ matrix.framework }}
-        run: pip install pytest ${{ matrix.framework }}
+        run: pip install pytest httpx requests ${{ matrix.framework }}
       - name: Smoke test with ${{ matrix.framework }} installed
         run: pytest tests/ -v -k "not test_no_frameworks"
         env:
