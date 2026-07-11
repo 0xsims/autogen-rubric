@@ -53,7 +53,9 @@ jobs:
       - name: Install latest ${{ matrix.framework }}
         run: pip install pytest httpx requests ${{ matrix.framework }}
       - name: Smoke test with ${{ matrix.framework }} installed
-        run: pytest tests/ -v -k "not test_no_frameworks"
+        run: pytest tests/ -v -k "not test_no_frameworks" --ignore=tests/test_live_smoke.py
+      - name: Live smoke (own process — test_core mocks poison sys.modules in a shared run)
+        run: pytest tests/test_live_smoke.py -v
         env:
           RUBRIC_CI_KEY: ${{ secrets.RUBRIC_CI_KEY }}
 
