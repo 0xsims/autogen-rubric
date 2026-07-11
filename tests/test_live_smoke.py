@@ -7,7 +7,11 @@ import pytest
 KEY = os.environ.get("RUBRIC_CI_KEY")
 pytestmark = pytest.mark.skipif(not KEY, reason="RUBRIC_CI_KEY not set")
 
-def _has(mod): return importlib.util.find_spec(mod) is not None
+def _has(mod):
+    try:
+        return importlib.util.find_spec(mod) is not None
+    except (ValueError, ModuleNotFoundError, ImportError):
+        return False  # mocked or partially-imported module: treat as unavailable
 
 def _assert_attested(capfd):
     err = capfd.readouterr().err
