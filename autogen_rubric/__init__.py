@@ -558,7 +558,8 @@ try:
                 self.client.attest(agent_id=self.agent_id,output=out[:2000],leaf_type=self.leaf_type,metadata={"framework":"haystack","reply_count":len(replies)},pipeline_id=self.pipeline_id)
             except Exception as e: logger.warning("[RubricHaystack] "+str(e))
             return {"replies":replies}
-    RubricHaystackComponent=_hsc(_hsc.output_types(replies=list)(RubricHaystackComponent))
+    RubricHaystackComponent.run = _hsc.output_types(replies=list)(RubricHaystackComponent.run)
+    RubricHaystackComponent = _hsc(RubricHaystackComponent)
     def rubric_haystack_callback(client,agent_id="haystack-pipeline",pipeline_id=None):
         def cb(snapshot):
             try:
@@ -567,7 +568,7 @@ try:
             except Exception as e: logger.warning("[RubricHaystack] "+str(e))
             return None
         return cb
-except ImportError:
+except Exception:
     class RubricHaystackComponent:
         def __init__(self,*a,**k): raise ImportError("haystack-ai not installed. pip install haystack-ai")
     def rubric_haystack_callback(*a,**k): raise ImportError("haystack-ai not installed. pip install haystack-ai")
@@ -578,8 +579,8 @@ try:
     from semantic_kernel.filters.functions.function_invocation_context import FunctionInvocationContext as _SKC
     def rubric_semantic_kernel_filter(client,pipeline_id=None,events=None):
         _ev=set(events or ["function"])
-        async def _f(context,next_fn):
-            await next_fn(context)
+        async def _f(context,next):
+            await next(context)
             if "function" not in _ev: return
             try:
                 r=context.result;out=str(getattr(r,"value",r))[:2000] if r else ""
@@ -588,7 +589,7 @@ try:
                 client.attest(agent_id=aid,output=out,leaf_type="AGENT_OUTPUT",metadata={"framework":"semantic_kernel","function":fn,"plugin":pl},pipeline_id=pipeline_id)
             except Exception as e: logger.warning("[RubricSK] "+str(e))
         return _f
-except ImportError:
+except Exception:
     def rubric_semantic_kernel_filter(*a,**k): raise ImportError("semantic-kernel not installed. pip install semantic-kernel")
 
 # ── Auto-Instrumentation ──────────────────────────────────────────────────────
@@ -660,6 +661,7 @@ def instrument(
         "openai", "anthropic", "langchain", "autogen",
         "llama_index", "crewai", "haystack", "semantic_kernel",
         "google.adk", "agents", "dspy", "langgraph",
+        "pydantic_ai", "strands",
     ]
 
     for fw in to_instrument:
@@ -693,6 +695,27 @@ def instrument(
                 _patch_crewai(client, pipeline_id)
                 detected.append("crewai")
                 logger.info("[Rubric] Instrumented: CrewAI")
+
+            elif fw == "pydantic_ai" and importlib.util.find_spec("pydantic_ai"):
+                from .pydantic_ai import instrument_pydantic_ai
+                instrument_pydantic_ai(api_key=getattr(client, "api_key", None),
+                                       base_url=client._endpoint())
+                detected.append("pydantic_ai")
+                logger.info("[Rubric] Instrumented: Pydantic AI")
+
+            elif fw == "google.adk" and importlib.util.find_spec("google.adk"):
+                from .google_adk import instrument_google_adk
+                instrument_google_adk(api_key=getattr(client, "api_key", None),
+                                      base_url=client._endpoint())
+                detected.append("google.adk")
+                logger.info("[Rubric] Instrumented: Google ADK")
+
+            elif fw == "agents" and importlib.util.find_spec("agents"):
+                from .openai_agents import instrument_openai_agents
+                instrument_openai_agents(api_key=getattr(client, "api_key", None),
+                                         base_url=client._endpoint())
+                detected.append("agents")
+                logger.info("[Rubric] Instrumented: OpenAI Agents SDK")
 
             elif fw == "dspy" and importlib.util.find_spec("dspy"):
                 _patch_dspy(client, pipeline_id)
@@ -970,6 +993,7 @@ __all__ = [
     "RubricClient","AttestationRequest","AttestationResult",
     "RubricAutoGenHook","RubricLlamaIndexHandler","RubricCrewAIListener",
     "RubricHaystackComponent","rubric_haystack_callback",
+    "instrument_pydantic_ai","instrument_google_adk","instrument_openai_agents","instrument_strands","RubricStrandsHooks","RubricTracingProcessor",
     "rubric_semantic_kernel_filter","attest_function",
     "instrument","Instrumentation",
 ]

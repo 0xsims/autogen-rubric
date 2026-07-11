@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autogen-rubric"
-version = "1.5.2"
+version = "1.8.0"
 description = "Post-quantum AI decision attestation for AutoGen, LlamaIndex, and any Python AI pipeline"
 readme = "README.md"
 license = { text = "MIT" }
@@ -28,7 +28,13 @@ dependencies = []
 [project.optional-dependencies]
 autogen = ["pyautogen>=0.2.0"]
 llama = ["llama-index>=0.10.0"]
-all = ["pyautogen>=0.2.0","llama-index>=0.10.0"]
+haystack = ["haystack-ai>=2.0", "httpx"]
+sk = ["semantic-kernel>=1.0"]
+pydantic = ["pydantic-ai-slim>=0.1", "httpx"]
+agents = ["openai-agents>=0.1", "httpx"]
+adk = ["google-adk>=1.0", "httpx"]
+strands = ["strands-agents>=1.0", "httpx"]
+all = ["pyautogen>=0.2.0","llama-index>=0.10.0","haystack-ai>=2.0","semantic-kernel>=1.0","pydantic-ai-slim>=0.1","openai-agents>=0.1","google-adk>=1.0","strands-agents>=1.0","httpx"]
 dev = ["pytest","pytest-asyncio","black","mypy"]
 
 [project.urls]
