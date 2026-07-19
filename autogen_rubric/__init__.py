@@ -987,6 +987,98 @@ def _patch_langgraph(client, pipeline_id):
     except Exception as e:
         logger.warning(f"[Rubric/LangGraph patch] {e}")
 
+
+# Sandbox execution attestation (framework-agnostic: LangSmith Sandboxes, E2B, Modal, Daytona, or any object exposing run()).
+# Wraps a sandbox session; records a hash-digest of every command and its output; attests the full
+# execution manifest at close. The attestation is the flight recorder for the agent's computer:
+# what ran, in what order, producing which artifacts, from which base state.
+class RubricSandbox:
+    """Wrap any sandbox object. Proxies every attribute; intercepts run() to record
+    {command, stdout_sha3, exit} per step. On close()/context-exit, attests the manifest.
+
+    Usage:
+        with RubricSandbox(rubric_client, sb, agent_id="analysis-agent", snapshot_ref="img:py3.12-a1b2") as rsb:
+            rsb.run("python clean.py")
+            rsb.register_artifact("report.pdf", open("report.pdf","rb").read())
+    """
+    def __init__(self, client, sandbox, agent_id="sandbox-agent", pipeline_id=None, snapshot_ref=None, max_steps=500):
+        self._client = client
+        self._sandbox = sandbox
+        self._agent_id = agent_id
+        self._pipeline_id = pipeline_id
+        self._snapshot_ref = snapshot_ref
+        self._max_steps = max_steps
+        self._steps = []
+        self._total_steps = 0
+        self._artifacts = []
+        self._attestation = None
+
+    def __getattr__(self, name):
+        return getattr(self._sandbox, name)
+
+    def run(self, command, *args, **kwargs):
+        result = self._sandbox.run(command, *args, **kwargs)
+        try:
+            stdout = getattr(result, "stdout", None)
+            if stdout is None and isinstance(result, dict):
+                stdout = result.get("stdout")
+            out_hash = _hash_dict_state({"stdout": stdout}) if stdout is not None else None
+            self._total_steps += 1
+            step = {"n": self._total_steps, "command": str(command)[:500], "stdout_sha3": out_hash,
+                    "exit": getattr(result, "exit_code", getattr(result, "returncode", None))}
+            if len(self._steps) < self._max_steps:
+                self._steps.append(step)
+        except Exception as e:
+            logger.warning("[RubricSandbox] step record failed: " + str(e))
+        return result
+
+    def register_artifact(self, name, content_bytes):
+        """Record an output artifact by content hash (the bytes themselves never leave your environment)."""
+        try:
+            self._artifacts.append({"name": str(name)[:200], "sha3": _hash_dict_state({"b": content_bytes.hex() if isinstance(content_bytes, (bytes, bytearray)) else str(content_bytes)}), "size": len(content_bytes)})
+        except Exception as e:
+            logger.warning("[RubricSandbox] artifact record failed: " + str(e))
+
+    def close(self):
+        """Attest the execution manifest. Called automatically on context exit."""
+        if self._attestation is not None:
+            return self._attestation
+        manifest = {"snapshot_ref": self._snapshot_ref, "steps": self._total_steps,
+                    "commands": self._steps, "truncated": self._total_steps > len(self._steps),
+                    "artifacts": self._artifacts}
+        try:
+            self._attestation = self._client.attest(
+                agent_id=self._agent_id,
+                output=json.dumps(manifest)[:8000],
+                leaf_type="SANDBOX_RUN",
+                metadata={"framework": "sandbox", "integration": "rubric-sandbox",
+                          "steps": self._total_steps, "artifacts": len(self._artifacts),
+                          "snapshot_ref": self._snapshot_ref},
+                pipeline_id=self._pipeline_id,
+            )
+        except Exception as e:
+            logger.warning("[RubricSandbox] attest failed: " + str(e))
+        return self._attestation
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+def attest_sandbox_run(client, commands, agent_id="sandbox-agent", pipeline_id=None, snapshot_ref=None, artifacts=None):
+    """One-shot form: attest an already-completed sandbox run from its command list.
+    commands: list of {"command": str, "stdout": str|None}; artifacts: list of (name, bytes)."""
+    steps = [{"n": i + 1, "command": str(c.get("command"))[:500],
+              "stdout_sha3": _hash_dict_state({"stdout": c.get("stdout")}) if c.get("stdout") is not None else None}
+             for i, c in enumerate(commands)]
+    arts = [{"name": str(n)[:200], "sha3": _hash_dict_state({"b": b.hex() if isinstance(b, (bytes, bytearray)) else str(b)}), "size": len(b)} for n, b in (artifacts or [])]
+    manifest = {"snapshot_ref": snapshot_ref, "steps": len(steps), "commands": steps, "artifacts": arts}
+    return client.attest(agent_id=agent_id, output=json.dumps(manifest)[:8000], leaf_type="SANDBOX_RUN",
+                         metadata={"framework": "sandbox", "integration": "rubric-sandbox", "steps": len(steps),
+                                   "artifacts": len(arts), "snapshot_ref": snapshot_ref}, pipeline_id=pipeline_id)
+
 __all__ = [
     "RubricAgnoInstrumentation","rubric_attest_tool",
     "RubricAgentRunHook","rubric_function_tool","get_sk_rubric_plugin",
@@ -996,5 +1088,6 @@ __all__ = [
     "instrument_pydantic_ai","instrument_google_adk","instrument_openai_agents","instrument_strands","RubricStrandsHooks","RubricTracingProcessor",
     "rubric_semantic_kernel_filter","attest_function",
     "instrument","Instrumentation",
+    "RubricSandbox","attest_sandbox_run",
 ]
-__version__ = "1.8.0"
+__version__ = "1.8.1"
