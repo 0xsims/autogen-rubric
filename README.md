@@ -6,6 +6,15 @@ Post-quantum attestation for OpenAI, Anthropic, LlamaIndex, LangChain, AutoGen, 
 
     pip install autogen-rubric
 
+
+## Get a free API key
+
+    https://rubric-protocol.com/get-started
+
+Takes 10 seconds. Key is shown instantly — no waiting for email.
+
+
+
 ## Auto-Instrumentation
 
 Add one line at app startup. Every AI decision is attested automatically.
@@ -45,7 +54,8 @@ Get a free API key at rubric-protocol.com.
         api_key="your-rubric-api-key",
         pipeline_id="loan-underwriting",
         node="eu",
-        enterprise=True,
+        tier="standard",  # or "developer", "enterprise"
+        enterprise=True,  # legacy alias
         payload_key_dir="/secure/keys",
         on_payload_key=my_vault_store,
         background_queue=True,
@@ -71,7 +81,7 @@ For custom inference layers or fine-grained control:
 
     from autogen_rubric import RubricClient
 
-    client = RubricClient(api_key="your-key", enterprise=True, background_queue=True)
+    client = RubricClient(api_key="your-key", tier="standard", background_queue=True)
 
     result = client.attest(
         agent_id="custom-model-v2",
@@ -94,6 +104,26 @@ The audit trail is independently verifiable without Rubric involvement.
 ## Links
 
 - Documentation: https://rubric-protocol.com/docs
-- API keys: https://rubric-protocol.com/developers
+- API keys: https://rubric-protocol.com/get-started
 - Website: https://rubric-protocol.com
 - Support: Scott@Rubric-Protocol.com
+## Sandbox execution attestation (new in 1.8.1)
+
+Agent sandboxes (LangSmith Sandboxes, E2B, Modal, Daytona) contain the blast radius of agent-executed code. `RubricSandbox` proves what happened inside: every command and output digest, every artifact hash, and the base snapshot — signed with ML-DSA-65 and anchored to Hedera at teardown. Sandboxes are the containment layer; this is the flight recorder.
+
+```python
+from langsmith.sandbox import SandboxClient
+from autogen_rubric import RubricClient, RubricSandbox
+
+rubric = RubricClient(api_key="YOUR_RUBRIC_API_KEY")
+
+with SandboxClient().sandbox() as sb:
+    with RubricSandbox(rubric, sb, agent_id="analysis-agent", snapshot_ref="img:py3.12-base") as rsb:
+        rsb.run("python clean_dataset.py")
+        rsb.run("python generate_report.py")
+        rsb.register_artifact("report.pdf", open("report.pdf", "rb").read())
+# On exit: one SANDBOX_RUN attestation — command digests, artifact hashes, snapshot lineage —
+# independently verifiable at rubric-protocol.com/verify, years after the sandbox is gone.
+```
+
+Works with any sandbox object exposing `run()`; all other methods pass through untouched. For already-completed runs, `attest_sandbox_run(client, commands, artifacts=...)` is the one-shot form.
