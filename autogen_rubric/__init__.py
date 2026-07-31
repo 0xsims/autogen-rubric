@@ -1091,3 +1091,9 @@ __all__ = [
     "RubricSandbox","attest_sandbox_run",
 ]
 __version__ = "1.8.1"
+
+from autogen_rubric._apa import (
+    attest_before_spend,
+    verify_spend_commitment,
+    AttestationGateError,
+)
