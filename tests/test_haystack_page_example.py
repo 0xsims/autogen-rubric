@@ -16,7 +16,17 @@ Works two ways — under pytest, and standalone:
 import importlib.util
 import sys
 
-HAS_HAYSTACK = importlib.util.find_spec("haystack") is not None
+def _has_haystack():
+    # Mirrors _has() in test_live_smoke.py: a mocked or partially-imported
+    # module raises ValueError("haystack.__spec__ is None") rather than
+    # returning None, and the suite injects one. Treat it as unavailable.
+    try:
+        return importlib.util.find_spec("haystack") is not None
+    except (ValueError, ModuleNotFoundError, ImportError):
+        return False
+
+
+HAS_HAYSTACK = _has_haystack()
 
 try:
     import pytest
