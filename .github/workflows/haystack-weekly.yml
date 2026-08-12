@@ -1,0 +1,76 @@
+# Weekly check that the published Haystack integration page still works.
+#
+# haystack.deepset.ai/integrations/rubric-protocol tells readers to run a
+# specific snippet. Nothing checks that it still runs after haystack-ai ships a
+# breaking change — the failure would surface as our integration being broken,
+# on deepset's site, found by a stranger. This closes that gap.
+#
+# Two jobs, deliberately different:
+#   published — installs autogen-rubric FROM PyPI, exactly as the page instructs.
+#               This tests the promise as a reader experiences it. A fix sitting
+#               unreleased in this repo must NOT make it pass.
+#   checkout  — installs this working tree, so a break is caught before release.
+
+name: haystack integration
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"        # Mondays 06:00 UTC
+  workflow_dispatch:
+  push:
+    paths:
+      - "autogen_rubric/**"
+      - "tests/**"
+      - ".github/workflows/haystack-weekly.yml"
+
+jobs:
+  published:
+    name: published package (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: install latest published autogen-rubric + latest haystack-ai
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade autogen-rubric haystack-ai
+      - name: record versions
+        run: python -m pip list | grep -Ei "autogen-rubric|haystack" || true
+      - name: run the published example
+        run: python tests/test_haystack_page_example.py
+
+  checkout:
+    name: this working tree (py3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install working tree + latest haystack-ai
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . haystack-ai
+      - name: run the published example
+        run: python tests/test_haystack_page_example.py
+
+  without-haystack:
+    name: graceful degradation (no haystack-ai)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install autogen-rubric only
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade autogen-rubric
+      - name: confirm the Haystack symbols fail with a usable message
+        run: python tests/test_haystack_absent.py
