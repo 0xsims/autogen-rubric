@@ -1,9 +1,7 @@
+.venv/
+dist/
+build/
+*.egg-info/
 __pycache__/
 *.pyc
-*.bak
-*.bak-*
-*.statehash.bak
-build/
-dist/
-*.egg-info/
-rubric_keys/
+.env
