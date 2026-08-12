@@ -74,15 +74,3 @@ jobs:
           python -m pip install --upgrade autogen-rubric
       - name: confirm the Haystack symbols fail with a usable message
         run: python tests/test_haystack_absent.py
-
-  notify:
-    name: Notify on failure
-    runs-on: ubuntu-latest
-    needs: [published, checkout, without-haystack]
-    if: failure()
-    permissions:
-      issues: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Open or update a CI failure issue
-        uses: ./.github/actions/notify-failure

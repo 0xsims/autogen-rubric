@@ -1,0 +1,24 @@
+# Temporary: proves the notify-failure action actually files an issue.
+# An alarm nobody has ever seen fire is indistinguishable from a broken one —
+# which is exactly how the SMTP notifier it replaces went unnoticed.
+# Delete this workflow once verified.
+name: notify selftest
+on:
+  workflow_dispatch:
+jobs:
+  fail-on-purpose:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "deliberate failure to exercise the notifier"
+          exit 1
+  notify:
+    name: Notify on failure
+    runs-on: ubuntu-latest
+    needs: [fail-on-purpose]
+    if: failure()
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/notify-failure

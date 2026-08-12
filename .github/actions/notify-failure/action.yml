@@ -1,0 +1,45 @@
+name: notify-failure
+description: >
+  Open (or comment on) a GitHub issue when CI fails. Replaces an SMTP step whose
+  Gmail credentials expired silently — the alarm for a broken check was itself
+  broken, which is why a suite running zero tests went unnoticed for weeks.
+  Uses the built-in GITHUB_TOKEN: no secret to expire, no third-party action,
+  and the failure mode is a visible missing issue rather than an unseen email.
+
+  Caller job must set:  permissions: { issues: write }
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        WF: ${{ github.workflow }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        REF: ${{ github.ref_name }}
+        EVENT: ${{ github.event_name }}
+        SHA: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        TITLE="CI failure: ${WF}"
+        BODY=$(printf '%s\n\n%s\n%s\n%s\n%s\n' \
+          "Workflow **${WF}** failed." \
+          "- Run: ${RUN_URL}" \
+          "- Branch: \`${REF}\` (${EVENT})" \
+          "- Commit: ${SHA}" \
+          "_Filed automatically. Comments accumulate on one issue rather than opening a new one per failure; close it once the workflow is green._")
+
+        gh label create ci-failure --repo "$REPO" --color B60205 \
+          --description "Automated CI failure report" >/dev/null 2>&1 || true
+
+        EXISTING=$(gh issue list --repo "$REPO" --state open --label ci-failure \
+          --search "\"${TITLE}\" in:title" --json number,title \
+          --jq "[.[] | select(.title == \"${TITLE}\")] | .[0].number // empty")
+
+        if [ -n "${EXISTING:-}" ]; then
+          gh issue comment "$EXISTING" --repo "$REPO" --body "$BODY"
+          echo "commented on issue #${EXISTING}"
+        else
+          gh issue create --repo "$REPO" --title "$TITLE" --label ci-failure --body "$BODY"
+        fi

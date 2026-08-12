@@ -62,11 +62,23 @@ jobs:
   notify:
     name: Notify on failure
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
     needs: [core, frameworks]
     if: failure()
     steps:
-      - uses: actions/checkout@v4
-      - name: Open or update a CI failure issue
-        uses: ./.github/actions/notify-failure
+      - name: Send failure email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.GMAIL_USER }}
+          password: ${{ secrets.GMAIL_PASS }}
+          to: Scott@Rubric-Protocol.com
+          from: Rubric CI <${{ secrets.GMAIL_USER }}>
+          subject: "⚠️ autogen-rubric compat failure — ${{ github.run_id }}"
+          body: |
+            A framework compatibility check failed in autogen-rubric.
+
+            Workflow: ${{ github.workflow }}
+            Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Check which framework broke and update the adapter + pyproject.toml version pins.
