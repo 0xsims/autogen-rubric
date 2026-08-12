@@ -2,27 +2,30 @@
 Reproduce the code published on haystack.deepset.ai/integrations/rubric-protocol
 verbatim, and assert it still works.
 
-That page is a standing promise that a specific snippet runs. It will break
-silently the first time haystack-ai ships an incompatible change, and the
-failure will surface as OUR integration being broken, on deepset's site,
-discovered by a stranger. This test is what makes that promise checkable.
+That page is a standing promise that a specific snippet runs. It breaks silently
+the first time haystack-ai ships an incompatible change, and the failure surfaces
+as OUR integration being broken, on deepset's site, found by a stranger.
 
-Hermetic: RubricClient's constructor only stores config (no network), and the
-component is never run, so nothing is transmitted and no API key is needed.
+Hermetic: RubricClient's constructor only stores config, and the component is
+never run, so nothing is transmitted and no API key is needed.
 
-Run directly:  python tests/test_haystack_page_example.py
+Works two ways — under pytest, and standalone:
+    pytest tests/test_haystack_page_example.py
+    python tests/test_haystack_page_example.py
 """
+import importlib.util
 import sys
 
-FAILURES = []
+HAS_HAYSTACK = importlib.util.find_spec("haystack") is not None
 
-def check(name, fn):
-    try:
-        fn()
-        print(f"ok    {name}")
-    except Exception as e:
-        FAILURES.append((name, e))
-        print(f"FAIL  {name}: {type(e).__name__}: {e}")
+try:
+    import pytest
+    skipif = pytest.mark.skipif
+except ImportError:                                    # standalone, no pytest
+    def skipif(cond, reason=""):
+        def deco(fn):
+            return fn
+        return deco
 
 
 # ---- block 1, exactly as published ---------------------------------------
@@ -67,7 +70,17 @@ def block_two():
     assert callable(attest), "rubric_haystack_callback did not return a callable"
 
 
-def versions():
+@skipif(not HAS_HAYSTACK, reason="haystack-ai not installed")
+def test_published_block_one():
+    block_one()
+
+
+@skipif(not HAS_HAYSTACK, reason="haystack-ai not installed")
+def test_published_block_two():
+    block_two()
+
+
+def _versions():
     import importlib.metadata as md
     for p in ("autogen-rubric", "haystack-ai"):
         try:
@@ -78,12 +91,22 @@ def versions():
 
 if __name__ == "__main__":
     print("installed:")
-    versions()
-    check("published block 1 — component + pipeline.connect", block_one)
-    check("published block 2 — callback factory", block_two)
+    _versions()
+    if not HAS_HAYSTACK:
+        print("SKIP: haystack-ai not installed")
+        sys.exit(0)
+    failures = []
+    for name, fn in (("published block 1 — component + pipeline.connect", block_one),
+                     ("published block 2 — callback factory", block_two)):
+        try:
+            fn()
+            print(f"ok    {name}")
+        except Exception as e:
+            failures.append(name)
+            print(f"FAIL  {name}: {type(e).__name__}: {e}")
     print()
-    if FAILURES:
-        print(f"{len(FAILURES)} FAILURE(S) — the published integration page is now wrong.")
+    if failures:
+        print(f"{len(failures)} FAILURE(S) — the published integration page is now wrong.")
         print("Fix the package or open a PR against deepset-ai/haystack-integrations.")
         sys.exit(1)
     print("published example still works")

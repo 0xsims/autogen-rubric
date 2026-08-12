@@ -72,18 +72,5 @@ ok("server ID used, not local", out["decision_attestation_id"] == "srv-123")
 ok("decision record returned", out["decision_record"]["schema"] == "rubric/apa-v1")
 s.shutdown()
 
-def test_apa_offline_conformance():
-    """Expose the module-level checks above to pytest.
-
-    Until 2026-08-12 this file ended with a bare sys.exit(), which pytest hits
-    during collection — SystemExit aborts the session with INTERNALERROR and
-    reports "no tests ran", while the PASS lines printed during import make the
-    log look like a passing suite. Nothing downstream of this file was ever
-    collected.
-    """
-    assert not fails, "%d APA offline conformance failure(s): %s" % (len(fails), fails)
-
-
-if __name__ == "__main__":
-    print("\nAPA OFFLINE CONFORMANCE (python): " + ("PASS" if not fails else "%d FAILURE(S)" % len(fails)))
-    sys.exit(0 if not fails else 1)
+print("\nAPA OFFLINE CONFORMANCE (python): " + ("PASS" if not fails else "%d FAILURE(S)" % len(fails)))
+sys.exit(0 if not fails else 1)
