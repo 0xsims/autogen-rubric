@@ -594,7 +594,19 @@ except Exception:
 
 # ── Auto-Instrumentation ──────────────────────────────────────────────────────
 
-import importlib
+import importlib.util
+
+def _has(name):
+    """Is a module importable?
+
+    find_spec RAISES for a dotted name whose parent is absent
+    (e.g. "google.adk" with no google package) rather than returning None.
+    """
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
+
 import functools
 import os
 
@@ -659,70 +671,70 @@ def instrument(
     detected = []
     to_instrument = frameworks or [
         "openai", "anthropic", "langchain", "autogen",
-        "llama_index", "crewai", "haystack", "semantic_kernel",
+        "llama_index", "crewai",
         "google.adk", "agents", "dspy", "langgraph",
-        "pydantic_ai", "strands",
+        "pydantic_ai",
     ]
 
     for fw in to_instrument:
         try:
-            if fw == "openai" and importlib.util.find_spec("openai"):
+            if fw == "openai" and _has("openai"):
                 _patch_openai(client, pipeline_id)
                 detected.append("openai")
                 logger.info("[Rubric] Instrumented: OpenAI")
 
-            elif fw == "anthropic" and importlib.util.find_spec("anthropic"):
+            elif fw == "anthropic" and _has("anthropic"):
                 _patch_anthropic(client, pipeline_id)
                 detected.append("anthropic")
                 logger.info("[Rubric] Instrumented: Anthropic")
 
-            elif fw == "langchain" and importlib.util.find_spec("langchain"):
+            elif fw == "langchain" and _has("langchain"):
                 _patch_langchain(client, pipeline_id)
                 detected.append("langchain")
                 logger.info("[Rubric] Instrumented: LangChain")
 
-            elif fw == "autogen" and importlib.util.find_spec("autogen"):
+            elif fw == "autogen" and _has("autogen"):
                 _patch_autogen(client, pipeline_id)
                 detected.append("autogen")
                 logger.info("[Rubric] Instrumented: AutoGen")
 
-            elif fw == "llama_index" and importlib.util.find_spec("llama_index"):
+            elif fw == "llama_index" and _has("llama_index"):
                 _patch_llamaindex(client, pipeline_id)
                 detected.append("llama_index")
                 logger.info("[Rubric] Instrumented: LlamaIndex")
 
-            elif fw == "crewai" and importlib.util.find_spec("crewai"):
+            elif fw == "crewai" and _has("crewai"):
                 _patch_crewai(client, pipeline_id)
                 detected.append("crewai")
                 logger.info("[Rubric] Instrumented: CrewAI")
 
-            elif fw == "pydantic_ai" and importlib.util.find_spec("pydantic_ai"):
+            elif fw == "pydantic_ai" and _has("pydantic_ai"):
                 from .pydantic_ai import instrument_pydantic_ai
                 instrument_pydantic_ai(api_key=getattr(client, "api_key", None),
                                        base_url=client._endpoint())
                 detected.append("pydantic_ai")
                 logger.info("[Rubric] Instrumented: Pydantic AI")
 
-            elif fw == "google.adk" and importlib.util.find_spec("google.adk"):
+            elif fw == "google.adk" and _has("google.adk"):
                 from .google_adk import instrument_google_adk
                 instrument_google_adk(api_key=getattr(client, "api_key", None),
                                       base_url=client._endpoint())
                 detected.append("google.adk")
                 logger.info("[Rubric] Instrumented: Google ADK")
 
-            elif fw == "agents" and importlib.util.find_spec("agents"):
+            elif fw == "agents" and _has("agents"):
                 from .openai_agents import instrument_openai_agents
                 instrument_openai_agents(api_key=getattr(client, "api_key", None),
                                          base_url=client._endpoint())
                 detected.append("agents")
                 logger.info("[Rubric] Instrumented: OpenAI Agents SDK")
 
-            elif fw == "dspy" and importlib.util.find_spec("dspy"):
+            elif fw == "dspy" and _has("dspy"):
                 _patch_dspy(client, pipeline_id)
                 detected.append("dspy")
                 logger.info("[Rubric] Instrumented: DSPy")
 
-            elif fw == "langgraph" and importlib.util.find_spec("langgraph"):
+            elif fw == "langgraph" and _has("langgraph"):
                 _patch_langgraph(client, pipeline_id)
                 detected.append("langgraph")
                 logger.info("[Rubric] Instrumented: LangGraph")
