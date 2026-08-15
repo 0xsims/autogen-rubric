@@ -315,11 +315,11 @@ class RubricClient:
                     stage=resp.get("stage","pending"),signed_at=submitted_at,node=self.node,
                     hcs_topic=resp.get("hcsTopic"),hcs_sequence=resp.get("hcsSequenceNumber"),
                     merkle_root=resp.get("merkleRoot"))
-                self._last_attestation_id = attestation_id
+                pass  # id is written by _rubric_set_link()
                 # Item 1 (Option B): server returns sign-time payload_hash in the
                 # response (no HCS wait). Stash it so the NEXT step can build
                 # signed provenance linking to this one — instantly, no polling.
-                self._last_payload_hash = resp.get("payloadHash")
+                _rubric_set_link(self, attestation_id, resp.get('payloadHash'))
                 result.payload_hash = resp.get("payloadHash")
                 return result
             except Exception as e:
@@ -327,7 +327,7 @@ class RubricClient:
                 return AttestationResult(attestation_id=attestation_id,agent_id=agent_id,
                     stage="local",signed_at=submitted_at,node=self.node,error=str(e))
         self._queue.enqueue(url, body, headers)
-        self._last_attestation_id = attestation_id
+        _rubric_clear_link(self, 'attestation %s was queued; no payload hash is available until the server responds' % attestation_id)
         return AttestationResult(attestation_id=attestation_id,agent_id=agent_id,
             stage="queued",signed_at=submitted_at,node=self.node)
 
@@ -561,9 +561,13 @@ try:
     RubricHaystackComponent.run = _hsc.output_types(replies=list)(RubricHaystackComponent.run)
     RubricHaystackComponent = _hsc(RubricHaystackComponent)
     def rubric_haystack_callback(client,agent_id="haystack-pipeline",pipeline_id=None):
-        def cb(snapshot):
+        def cb(pipeline_result):
             try:
-                out=json.dumps(getattr(snapshot,"pipeline_outputs",{}))[:2000]
+                _o=_rubric_resolve_pipeline_outputs(pipeline_result)
+                if not _o:
+                    logger.error('[RubricHaystack] no attestation written - could not resolve pipeline outputs from %s. Nothing was anchored for this run.', type(pipeline_result).__name__)
+                    return None
+                out=json.dumps(_o,default=str)[:2000]
                 client.attest(agent_id=agent_id,output=out,leaf_type="AGENT_OUTPUT",metadata={"framework":"haystack","event":"pipeline_snapshot"},pipeline_id=pipeline_id)
             except Exception as e: logger.warning("[RubricHaystack] "+str(e))
             return None
@@ -1102,10 +1106,85 @@ __all__ = [
     "instrument","Instrumentation",
     "RubricSandbox","attest_sandbox_run",
 ]
-__version__ = "1.8.1"
+__version__ = "1.10.3"
 
 from autogen_rubric._apa import (
     attest_before_spend,
     verify_spend_commitment,
     AttestationGateError,
 )
+
+
+# ---------------------------------------------------------------------------
+# Provenance link (1.10.3) — see ISSUE-provenance-chaining.md
+# ---------------------------------------------------------------------------
+import threading as _rubric_threading
+
+_RUBRIC_LINK_LOCK = _rubric_threading.Lock()
+
+
+class ProvenanceLink:
+    """An (attestation_id, payload_hash) pair. A half-populated one cannot exist."""
+    __slots__ = ("attestation_id", "payload_hash")
+
+    def __init__(self, attestation_id, payload_hash):
+        if not attestation_id or not payload_hash:
+            raise ValueError("a ProvenanceLink requires both an id and a hash")
+        self.attestation_id = attestation_id
+        self.payload_hash = payload_hash
+
+    def as_parent(self, issuer_region, relationship="consumed_output"):
+        return {"parent_attestation_id": self.attestation_id,
+                "parent_payload_hash": self.payload_hash,
+                "parent_issuer_region": issuer_region,
+                "relationship": relationship}
+
+
+def _rubric_set_link(client, attestation_id, payload_hash):
+    if not payload_hash:
+        return _rubric_clear_link(client, "server returned no payloadHash for %s" % attestation_id)
+    link = ProvenanceLink(attestation_id, payload_hash)
+    with _RUBRIC_LINK_LOCK:
+        client._rubric_link = link
+    return link
+
+
+def _rubric_clear_link(client, reason):
+    with _RUBRIC_LINK_LOCK:
+        was = getattr(client, "_rubric_link", None)
+        client._rubric_link = None
+        client._provenance_degraded = True
+    if was is not None:
+        logger.warning("[RubricClient] provenance chain broken - %s. The next attestation "
+                       "will carry no parent. Use background_queue=False if you need "
+                       "unbroken chaining.", reason)
+    return None
+
+
+def _rubric_take_link(client):
+    with _RUBRIC_LINK_LOCK:
+        return getattr(client, "_rubric_link", None)
+
+
+def _rubric_resolve_pipeline_outputs(obj):
+    """Pipeline.run() dict | PipelineSnapshot | PipelineState -> outputs mapping."""
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj
+    state = getattr(obj, "pipeline_state", None)
+    if state is not None:
+        outputs = getattr(state, "pipeline_outputs", None)
+        if outputs is not None:
+            return outputs
+    return getattr(obj, "pipeline_outputs", None)
+
+
+# Read-only views. attest_tool_call() consumes these unmodified and can no
+# longer see an id from one attestation beside a hash from another.
+RubricClient._last_attestation_id = property(
+    lambda self: (lambda l: l.attestation_id if l else None)(_rubric_take_link(self)))
+RubricClient._last_payload_hash = property(
+    lambda self: (lambda l: l.payload_hash if l else None)(_rubric_take_link(self)))
+RubricClient._provenance_degraded = False
+RubricClient._rubric_link = None
