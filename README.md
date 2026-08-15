@@ -45,8 +45,13 @@ Get a free API key at rubric-protocol.com.
 
     # Auto-detects and instruments any of:
     # openai, anthropic, langchain, llama_index,
-    # autogen, crewai, haystack, semantic_kernel,
-    # langgraph, dspy
+    # autogen, crewai, langgraph, dspy,
+    # pydantic_ai, google.adk, openai-agents
+
+    # NOT auto-instrumented - use the explicit integrations:
+    #   Haystack:        RubricHaystackComponent / rubric_haystack_callback
+    #   Semantic Kernel: get_sk_rubric_plugin / rubric_semantic_kernel_filter
+    #   Strands:         instrument_strands / RubricStrandsHooks
 
 ## Configuration
 
