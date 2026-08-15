@@ -73,11 +73,32 @@ def block_one():
 
 # ---- block 2, exactly as published ---------------------------------------
 def block_two():
+    import autogen_rubric as _ar
     from autogen_rubric import RubricClient, rubric_haystack_callback
-    client = RubricClient(api_key="ci-smoke-not-a-real-key")
-    attest = rubric_haystack_callback(client, agent_id="support-rag")
-    # Deliberately NOT called: attest(result) would POST a real attestation.
-    assert callable(attest), "rubric_haystack_callback did not return a callable"
+
+    sent = []
+    real_post = _ar._http_post
+
+    def capture(url, body, headers, timeout=15):
+        sent.append(body)
+        return {"stage": "pending", "payloadHash": "ci-stub"}
+
+    _ar._http_post = capture          # stubbed: no attestation leaves CI
+    try:
+        client = RubricClient(api_key="ci-smoke-not-a-real-key")
+        attest = rubric_haystack_callback(client, agent_id="support-rag")
+        assert callable(attest), "rubric_haystack_callback did not return a callable"
+
+        # The published example passes the result of Pipeline.run().
+        result = {"llm": {"replies": ["the published example output"]}}
+        attest(result)
+
+        assert sent, "callback produced no attestation at all"
+        out = sent[-1]["data"].get("output")
+        assert out != "{}", "callback anchored an empty payload"
+        assert "published example" in out, "unexpected payload: %r" % (out,)
+    finally:
+        _ar._http_post = real_post
 
 
 @skipif(not HAS_HAYSTACK, reason="haystack-ai not installed")
