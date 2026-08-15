@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autogen-rubric"
-version = "1.10.0"
+version = "1.10.3"
 description = "Post-quantum AI decision attestation for AutoGen, LlamaIndex, and any Python AI pipeline"
 readme = "README.md"
 license = { text = "MIT" }
