@@ -1,11 +1,27 @@
-import unittest
+"""Haystack callback + provenance regression tests.
+
+The callback cases need a REAL haystack-ai: without it autogen_rubric binds
+rubric_haystack_callback to the ImportError placeholder, so they error rather
+than test anything. They skip when it is absent, except where
+RUBRIC_REQUIRE_HAYSTACK is set (the haystack-ai compat job) — there a skip
+would be the silent rot this file exists to prevent, so it fails instead.
+"""
+import importlib.util, os, unittest
 import autogen_rubric as ar
 
-try:
-    import haystack
-    HAVE = True
-except ImportError:
-    HAVE = False
+
+def _has_haystack():
+    # `import haystack` is not enough: test_core.py may have put a bare
+    # ModuleType in sys.modules, and that import would succeed against the
+    # stub. A stub has __spec__ is None, so find_spec raises ValueError.
+    try:
+        return importlib.util.find_spec("haystack") is not None
+    except (ValueError, ModuleNotFoundError, ImportError):
+        return False
+
+
+HAVE = _has_haystack()
+REQUIRE = os.environ.get("RUBRIC_REQUIRE_HAYSTACK") not in (None, "", "0")
 
 OUT = {"llm": {"replies": ["The deductible is $500."]}}
 
@@ -32,10 +48,16 @@ class Base(unittest.TestCase):
 
 class TestEnv(unittest.TestCase):
     def test_haystack_installed(self):
-        self.assertTrue(HAVE, "haystack-ai missing: these tests would only "
-                              "exercise the ImportError stub")
+        if not HAVE and not REQUIRE:
+            raise unittest.SkipTest(
+                "haystack-ai not installed; the callback cases below would only "
+                "exercise the ImportError stub, so they are skipped too")
+        self.assertTrue(HAVE, "RUBRIC_REQUIRE_HAYSTACK is set but haystack-ai "
+                              "is missing: these tests would only exercise the "
+                              "ImportError stub")
 
 
+@unittest.skipUnless(HAVE, "haystack-ai not installed")
 class TestCallback(Base):
     def test_dict_attests_real_content(self):
         ar.rubric_haystack_callback(self.c, agent_id="t")(OUT)
@@ -72,8 +94,21 @@ class TestProvenance(Base):
 
 class TestMeta(unittest.TestCase):
     def test_version_matches_wheel(self):
-        from importlib.metadata import version
-        self.assertEqual(ar.__version__, version("autogen-rubric"))
+        """__version__ must agree with the installed distribution's metadata.
+
+        Caught 1.8.1-in-module vs 1.10.2-on-the-wheel. Only meaningful against
+        an installed distribution: a bare `pytest tests/` in a checkout has no
+        metadata to compare, which raised PackageNotFoundError and failed the
+        compat core job. CI installs the working tree, so this runs there.
+        """
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            installed = version("autogen-rubric")
+        except PackageNotFoundError:
+            raise unittest.SkipTest(
+                "autogen-rubric is not installed in this environment "
+                "(run `pip install .` to exercise this check)")
+        self.assertEqual(ar.__version__, installed)
 
 
 if __name__ == "__main__":
