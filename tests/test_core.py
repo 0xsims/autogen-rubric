@@ -1,12 +1,30 @@
 """Core smoke tests — no real API calls, no framework installs required."""
-import sys, types, unittest
+import importlib.util, sys, types, unittest
 from unittest.mock import patch, MagicMock
 
+def _installed(mod):
+    """True only if `mod` can really be imported from site-packages.
+
+    `mod not in sys.modules` is not the same question: nothing has imported
+    haystack yet at this point in the session even when haystack-ai IS
+    installed, so the old check stubbed it anyway. autogen_rubric binds its
+    integration symbols at import time, so that stub permanently replaced
+    RubricHaystackComponent with the ImportError placeholder for every later
+    test in the same process — the poisoning compat.yml works around by
+    running test_live_smoke.py in its own process.
+    """
+    try:
+        return importlib.util.find_spec(mod) is not None
+    except (ValueError, ModuleNotFoundError, ImportError):
+        return False
+
 # ── stub heavy frameworks so tests run without them installed ──────────────
+# Only the genuinely-absent ones: a stub over an installed framework hides the
+# real integration from the very jobs that exist to exercise it.
 for mod in ["openai","anthropic","langchain","autogen","llama_index",
             "crewai","haystack","semantic_kernel","google.adk","agents",
             "dspy","langgraph","pydantic_ai","strands"]:
-    if mod not in sys.modules:
+    if mod not in sys.modules and not _installed(mod):
         sys.modules[mod] = types.ModuleType(mod)
 
 import autogen_rubric as ar
@@ -62,3 +80,4 @@ class TestPatchFunctions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
