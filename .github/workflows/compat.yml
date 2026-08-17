@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install pytest
+      - run: pip install pytest .
       - run: pytest tests/ -v
 
   frameworks:
@@ -51,7 +51,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install latest ${{ matrix.framework }}
-        run: pip install pytest httpx requests ${{ matrix.framework }}
+        run: pip install pytest httpx requests ${{ matrix.framework }} .
       - name: Smoke test with ${{ matrix.framework }} installed
         run: pytest tests/ -v -k "not test_no_frameworks" --ignore=tests/test_live_smoke.py
       - name: Live smoke (own process — test_core mocks poison sys.modules in a shared run)
