@@ -112,6 +112,37 @@ The audit trail is independently verifiable without Rubric involvement.
 - API keys: https://rubric-protocol.com/get-started
 - Website: https://rubric-protocol.com
 - Support: Scott@Rubric-Protocol.com
+## Agent payment attestation — AWS Bedrock AgentCore Payments (since 1.10.0)
+
+AgentCore Payments gives a Bedrock agent a wallet, a spend policy and an audit trail. The trail is logs: written by the same account that made the payment, after the payment, and self-asserted — the same gap that makes any agent's own record of its own spending weak evidence in a dispute.
+
+`attest_before_spend` wraps the payment callable and writes the decision **before** the money moves. In the default `mode="enforce"`, a decision attestation that cannot be written blocks the spend: there is no path where value moves and no record exists. A log written afterwards can always be the one that never got written.
+
+```python
+from autogen_rubric import attest_before_spend
+
+# Any payment callable: an AgentCore Payments client method, an x402 fetch
+# wrapper, a treasury API. The binding point is the function, not the vendor.
+pay = attest_before_spend(
+    agentcore_payments.pay,          # payment_fn(params, ctx) -> result
+    api_key="YOUR_RUBRIC_API_KEY",
+    agent_id="procurement-agent",
+    mandate_ref="mandate-8841",      # ties every spend to the authorization
+    rail="x402",
+    mode="enforce",                  # no attestation, no payment
+)
+
+out = pay({"to": "0xaB67...54ca", "amount": "100000"},
+          intent="renew data subscription",
+          payee="acme-data", amount="100000", currency="USDC")
+```
+
+Two attestations per spend: `AGENT_SPEND_DECISION` before the call and `AGENT_SPEND_RECEIPT` after it, so an authorized-but-never-settled payment is distinguishable from one that went through — a distinction the wallet balance alone cannot make.
+
+Payment parameters are encrypted at rest under a per-attestation key Rubric returns and does not retain; `paramsHash` is the public commitment. You can prove to a counterparty exactly what the agent was instructed to pay without disclosing the instruction to anyone else, and `verify_spend_commitment(record, payload_key, expected_commitment)` checks it offline.
+
+Any `mode` other than `"enforce"` — `"observe"`, say — records without gating while you evaluate. Everything else — wallet custody, spend limits, approval policy — stays with AgentCore; this adds the evidence layer those controls are judged against.
+
 ## Sandbox execution attestation (new in 1.8.1)
 
 Agent sandboxes (LangSmith Sandboxes, E2B, Modal, Daytona) contain the blast radius of agent-executed code. `RubricSandbox` proves what happened inside: every command and output digest, every artifact hash, and the base snapshot — signed with ML-DSA-65 and anchored to Hedera at teardown. Sandboxes are the containment layer; this is the flight recorder.
