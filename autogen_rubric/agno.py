@@ -4,9 +4,19 @@ autogen_rubric.agno
 Rubric Protocol attestation for the Agno agent framework.
 """
 from __future__ import annotations
-import json, os
+import json, os, uuid
 from functools import wraps
 from typing import Any, Optional
+
+def _default_agent_id(base):
+    """Stable per-host default so unconfigured users don't share one global bucket."""
+    import hashlib, socket
+    try:
+        h = hashlib.sha256(socket.gethostname().encode()).hexdigest()[:8]
+    except Exception:
+        h = "local"
+    return f"{base}-{h}"
+
 
 try:
     import httpx
@@ -19,17 +29,18 @@ class _RubricHTTP:
         self.base_url = base_url.rstrip("/")
     def _headers(self):
         return {"Content-Type": "application/json", "x-api-key": self.api_key}
-    def attest(self, payload, agent_id, metadata=None):
+    def attest(self, payload, agent_id, metadata=None, source_id=None):
         if httpx is None: raise ImportError("httpx required: pip install httpx")
         resp = httpx.post(f"{self.base_url}/v1/tiered-attest",
             headers=self._headers(),
-            json={"agentId": agent_id, "sourceId": agent_id,
+            json={"agentId": agent_id, "sourceId": source_id or f"{agent_id}-{uuid.uuid4()}",
                   "data": payload, "metadata": metadata or {}}, timeout=30)
         resp.raise_for_status()
         return resp.json()
 
-def rubric_attest_tool(api_key, agent_id="agno-agent", base_url="https://rubric-protocol.com"):
+def rubric_attest_tool(api_key, agent_id=None, base_url="https://rubric-protocol.com"):
     """Returns a plain Python function Agno registers as a Tool."""
+    agent_id = agent_id or _default_agent_id("agno-agent")
     client = _RubricHTTP(api_key=api_key, base_url=base_url)
     def rubric_attest(payload: str, metadata: str = "{}") -> str:
         """
@@ -46,10 +57,10 @@ def rubric_attest_tool(api_key, agent_id="agno-agent", base_url="https://rubric-
 
 class RubricAgnoInstrumentation:
     """Auto-instruments an Agno Agent to attest every response."""
-    def __init__(self, api_key=None, agent_id="agno-agent",
+    def __init__(self, api_key=None, agent_id=None,
                  base_url="https://rubric-protocol.com", log_attestations=True):
         self.client = _RubricHTTP(api_key=api_key or os.environ["RUBRIC_API_KEY"], base_url=base_url)
-        self.agent_id = agent_id
+        self.agent_id = agent_id or _default_agent_id("agno-agent")
         self.log = log_attestations
 
     def instrument(self, agent):

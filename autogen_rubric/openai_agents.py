@@ -6,8 +6,19 @@ Registers a TracingProcessor: every completed trace (agent workflow) is attested
 """
 from __future__ import annotations
 import os, threading
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+def _default_agent_id(base):
+    """Stable per-host default so unconfigured users don't share one global bucket."""
+    import hashlib, socket
+    try:
+        h = hashlib.sha256(socket.gethostname().encode()).hexdigest()[:8]
+    except Exception:
+        h = "local"
+    return f"{base}-{h}"
+
 
 try:
     import httpx
@@ -20,13 +31,13 @@ class _RubricHTTP:
     def __init__(self, api_key, base_url="https://rubric-protocol.com"):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
-    def attest(self, payload, agent_id, metadata=None):
+    def attest(self, payload, agent_id, metadata=None, source_id=None):
         if httpx is None: raise ImportError("httpx required: pip install httpx")
         data = {"output": payload, "leafType": "AGENT_OUTPUT", "framework": _FRAMEWORK,
                 "submittedAt": datetime.now(timezone.utc).isoformat()}
         resp = httpx.post(f"{self.base_url}/v1/tiered-attest",
             headers={"Content-Type": "application/json", "x-api-key": self.api_key},
-            json={"agentId": agent_id, "sourceId": agent_id,
+            json={"agentId": agent_id, "sourceId": source_id or f"{agent_id}-{uuid.uuid4()}",
                   "data": data, "metadata": metadata or {}}, timeout=30)
         resp.raise_for_status()
         return resp.json()
@@ -34,11 +45,11 @@ class _RubricHTTP:
 class RubricTracingProcessor:
     """OpenAI Agents SDK TracingProcessor: attests each finished trace and
     each finished generation/agent span's terminal output."""
-    def __init__(self, api_key=None, agent_id="openai-agents",
+    def __init__(self, api_key=None, agent_id=None,
                  base_url="https://rubric-protocol.com", log_attestations=True,
                  blocking=False, span_level=False):
         self.client = _RubricHTTP(api_key=api_key or os.environ["RUBRIC_API_KEY"], base_url=base_url)
-        self.agent_id = agent_id
+        self.agent_id = agent_id or _default_agent_id("openai-agents")
         self.log = log_attestations
         self.blocking = blocking
         self.span_level = span_level
@@ -76,7 +87,7 @@ class RubricTracingProcessor:
     def shutdown(self) -> None: pass
     def force_flush(self) -> None: pass
 
-def instrument_openai_agents(api_key=None, agent_id="openai-agents",
+def instrument_openai_agents(api_key=None, agent_id=None,
                              base_url="https://rubric-protocol.com", replace=False, **kw):
     """Register the Rubric processor with the Agents SDK tracing pipeline.
     replace=False adds alongside existing processors (OpenAI's exporter stays)."""

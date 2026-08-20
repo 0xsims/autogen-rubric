@@ -6,9 +6,20 @@ Wraps Agent.run_sync / Agent.run at class level: every agent result is attested.
 """
 from __future__ import annotations
 import os, threading
+import uuid
 from datetime import datetime, timezone
 from functools import wraps
 from typing import Optional
+
+def _default_agent_id(base):
+    """Stable per-host default so unconfigured users don't share one global bucket."""
+    import hashlib, socket
+    try:
+        h = hashlib.sha256(socket.gethostname().encode()).hexdigest()[:8]
+    except Exception:
+        h = "local"
+    return f"{base}-{h}"
+
 
 try:
     import httpx
@@ -21,13 +32,13 @@ class _RubricHTTP:
     def __init__(self, api_key, base_url="https://rubric-protocol.com"):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
-    def attest(self, payload, agent_id, metadata=None):
+    def attest(self, payload, agent_id, metadata=None, source_id=None):
         if httpx is None: raise ImportError("httpx required: pip install httpx")
         data = {"output": payload, "leafType": "AGENT_OUTPUT", "framework": _FRAMEWORK,
                 "submittedAt": datetime.now(timezone.utc).isoformat()}
         resp = httpx.post(f"{self.base_url}/v1/tiered-attest",
             headers={"Content-Type": "application/json", "x-api-key": self.api_key},
-            json={"agentId": agent_id, "sourceId": agent_id,
+            json={"agentId": agent_id, "sourceId": source_id or f"{agent_id}-{uuid.uuid4()}",
                   "data": data, "metadata": metadata or {}}, timeout=30)
         resp.raise_for_status()
         return resp.json()
@@ -41,11 +52,11 @@ def _extract(result) -> Optional[str]:
     return str(result)[:8000]
 
 class RubricPydanticAIInstrumentation:
-    def __init__(self, api_key=None, agent_id="pydantic-ai-agent",
+    def __init__(self, api_key=None, agent_id=None,
                  base_url="https://rubric-protocol.com", log_attestations=True,
                  blocking=False):
         self.client = _RubricHTTP(api_key=api_key or os.environ["RUBRIC_API_KEY"], base_url=base_url)
-        self.agent_id = agent_id
+        self.agent_id = agent_id or _default_agent_id("pydantic-ai-agent")
         self.log = log_attestations
         self.blocking = blocking
 
@@ -79,7 +90,7 @@ class RubricPydanticAIInstrumentation:
             Agent.run = patched_run
         return True
 
-def instrument_pydantic_ai(api_key=None, agent_id="pydantic-ai-agent",
+def instrument_pydantic_ai(api_key=None, agent_id=None,
                            base_url="https://rubric-protocol.com", **kw):
     inst = RubricPydanticAIInstrumentation(api_key=api_key, agent_id=agent_id, base_url=base_url, **kw)
     inst.instrument()
