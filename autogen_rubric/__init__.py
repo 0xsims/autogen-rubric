@@ -1105,9 +1105,11 @@ __all__ = [
     "rubric_semantic_kernel_filter","attest_function",
     "instrument","Instrumentation",
     "RubricSandbox","attest_sandbox_run",
+    "build_claim","sign_claim","attest_claim",
 ]
-__version__ = "1.10.3"
+__version__ = "1.11.0"
 
+from autogen_rubric.cva import build_claim, sign_claim, attest_claim
 from autogen_rubric._apa import (
     attest_before_spend,
     verify_spend_commitment,
