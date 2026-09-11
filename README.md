@@ -106,6 +106,35 @@ Every attested decision receives:
 
 The audit trail is independently verifiable without Rubric involvement.
 
+## C2PA verdict attestation — Google Credentio (since 1.11.0)
+
+Google's Credentio validates C2PA Content Credentials locally. The verdict dies with the process. These helpers make it durable: post-quantum signed, anchored to Hedera, verifiable by anyone forever.
+
+```python
+from autogen_rubric import build_claim, sign_claim, attest_claim
+
+# verdict: Credentio crjson output (or a normalized {code, statusCodes} dict)
+claim = build_claim(
+    verdict,
+    asset_bytes=open("photo.jpg", "rb").read(),
+    media_type="image/jpeg",
+    trust_list_path="c2pa-trust-list.pem",
+    engine_version="live-at-head",
+    engine_commit="4ac69fc5",
+)
+
+# optional: eip191-sign so the record reads eip191-verified, not
+# recorded-not-verified. pip install autogen-rubric[cva-sign]
+sign_claim(claim, private_key=EVM_KEY)
+
+# $0.05 USDC over x402. `post` is any x402-capable callable:
+# post(url, json_body) handling the 402 challenge -> retry handshake.
+receipt = attest_claim(claim, post=my_x402_post)
+print(receipt["attestationId"], receipt["verify"])
+```
+
+The record carries the trust list hash, engine commit, signer chain fingerprint, and verdict codes verbatim. Tier A ($0.25, Rubric runs Credentio server-side as validator of record) is a raw POST to `/v1/c2pa/verdict-attest` — no SDK needed. Spec: rubric-cva/0.1.
+
 ## Links
 
 - Documentation: https://rubric-protocol.com/docs
